@@ -12,7 +12,8 @@ from configparser import SafeConfigParser
 from math import radians, degrees, sqrt, pi
 from .fluid import Fluid
 from .rotor import Rotor
-
+from .airfoil import load_airfoil
+import pdb
 
 class Solver: 
     """
@@ -321,10 +322,10 @@ class Solver:
         """
 
         def run_bemt(x):
-            print('Current iteration:',x)
-            for sec,pitch in zip(self.rotor.sections, x):
-                sec.pitch = np.radians(pitch)
-
+            print('Current iteration:',x, self.rpm, self.v_inf)
+       
+            for i in range(self.rotor.n_sections):	    
+                self.rotor.alpha[i] = x[i]    
             T,Q,P,df = self.run()
             if self.mode == 'turbine':
                 return -P
@@ -338,4 +339,137 @@ class Solver:
 
         return result 
         
+
+    def optimize_pitch_chord(self):
+        """
+        Optimize rotor pitch for either maximum thrust (propeller) or maximum power (turbine)
+        using a genetic evolution algorithm.
+
+        This is intended as an example of how optimization can be done using the scipy.optimize
+        package. The overall procedure can be readily modified to optimize for other parameters,
+        e.g. a parametrized function for the pitch, or for a parameter sweep instead of 
+        a single parameter set.
+
+        return: Array of optimized pitches
+        """
+
+        def run_bemt(x):
+            print('Current iteration:',x, self.rpm, self.v_inf)
+       
+            for i in range(self.rotor.n_sections):      
+                self.rotor.alpha[i] = x[i]
+            for i in range(self.rotor.n_sections):      
+                self.rotor.sections[i].chord = x[i + self.rotor.n_sections]               
+            T,Q,P,df = self.run()
+            if self.mode == 'turbine':
+                return -P
+            else:
+                return -T
+
+        x = [sec.pitch for sec in self.rotor.sections]
+        bounds = [(0,75)]*len(x)
+
+        y = [sec.chord for sec in self.rotor.sections]
+        bounds += [(0.01*self.rotor.diameter,0.1*self.rotor.diameter)]*len(y)
         
+        x = np.concatenate((x, y), axis=None)
+
+        result = optimize.differential_evolution(run_bemt, bounds, tol=1e-1)
+
+        return result 
+        
+    def optimize_full(self):
+        """
+        Optimize rotor pitch for either maximum thrust (propeller) or maximum power (turbine)
+        using a genetic evolution algorithm.
+
+        This is intended as an example of how optimization can be done using the scipy.optimize
+        package. The overall procedure can be readily modified to optimize for other parameters,
+        e.g. a parametrized function for the pitch, or for a parameter sweep instead of 
+        a single parameter set.
+
+        return: Array of optimized pitches
+        """
+
+        def run_bemt(x):
+            print('\n\nCurrent iteration - RPM = %d - Vinf = %.3f'%(self.rpm, self.v_inf))
+            
+            pitch_in = x[0:self.rotor.n_sections]
+            chord_in = x[self.rotor.n_sections:2*self.rotor.n_sections]
+            airfoils_in = [" "] * self.rotor.n_sections
+
+            # Make a deep copy
+            pitch_out = np.empty_like(pitch_in); pitch_out[:] = pitch_in
+            chord_out = np.empty_like(chord_in); chord_out[:] = chord_in
+            airfoils_out = [" "] * self.rotor.n_sections
+
+            r_i = np.zeros(self.rotor.n_sections)
+            for i in range(self.rotor.n_sections):
+                r_i[i] = self.rotor.sections[i].radius
+
+            if interpolate:
+
+                # Build a 3rd order polynomial fit 
+                pl_twist  = np.poly1d(np.polyfit(r_i, x[0:self.rotor.n_sections], 2))
+                pl_chord  = np.poly1d(np.polyfit(r_i, x[self.rotor.n_sections:2*self.rotor.n_sections], 2))
+
+                for i in range(self.rotor.n_sections):      
+                    self.rotor.alpha[i] = pl_twist(r_i[i])
+                    pitch_out[i]        = pl_twist(r_i[i])
+
+                for i in range(self.rotor.n_sections):      
+                    self.rotor.sections[i].chord = pl_chord(r_i[i])
+                    chord_out[i]                 = pl_chord(r_i[i])
+
+                if airfoil_db:
+                    for i in range(self.rotor.n_sections):
+                        self.rotor.sections[i].airfoil = load_airfoil(airfoils_list[int(x[i + 2*self.rotor.n_sections])])
+                        airfoils_out[i] = airfoils_list[int(x[i + 2*self.rotor.n_sections])]
+            else:
+                for i in range(self.rotor.n_sections):      
+                    self.rotor.alpha[i] = x[i]
+                for i in range(self.rotor.n_sections):      
+                    self.rotor.sections[i].chord = x[i + self.rotor.n_sections]
+                if airfoil_db:
+                    for i in range(self.rotor.n_sections):
+                        self.rotor.sections[i].airfoil = load_airfoil(airfoils_list[int(x[i + 2*self.rotor.n_sections])])
+
+            T,Q,P,df = self.run()
+
+            dT       = df.dT.values
+            dQ       = df.dQ.values
+            Re       = df.Re.values
+            print("\nRadius Chord Chord(Interp) Pitch Pitch(Interp) dT dQ Re Airfoil")
+            for i in range(len(r_i)):
+                print("%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %s"%(r_i[i], chord_in[i], chord_out[i], pitch_in[i], pitch_out[i], dT[i], dQ[i], Re[i], airfoils_out[i]))
+            return None
+
+            if self.mode == 'turbine':
+                return -P
+            else:
+                return -T
+        
+        interpolate = False
+        airfoil_db  = False
+        
+        airfoils_list = ['NACA_4412', 'CLARKY', 'GOE_408', 'GOE_450', 'NACA_63815', 'NRELS814']
+
+        x = [sec.pitch for sec in self.rotor.sections]
+        bounds = [(0.,75.)]*len(x)
+
+        y = [sec.chord for sec in self.rotor.sections]
+        bounds += [(0.01*self.rotor.diameter,0.1*self.rotor.diameter)]*len(y)
+        
+        if airfoil_db:
+            z = np.zeros(self.rotor.n_sections)
+            bounds += [(0,5)]*len(z)
+            x = np.concatenate((x, y, z), axis=None)
+        else:
+            x = np.concatenate((x, y), axis=None)
+
+
+        try:
+            result = optimize.differential_evolution(run_bemt, bounds, tol=1e-1)
+        except TypeError:
+            pdb.set_trace()
+        return result 
