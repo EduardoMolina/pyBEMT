@@ -139,7 +139,51 @@ class Solver:
 
         return TSR, CP, CT
 
+    def force_per_unit_area(self):
+        """ 
+        Dimensional force per unit area.
+
+        .. math::
+            \\text{J} = \\frac{V_\\infty}{nD} \\\\
+            C_T = \\frac{T}{\\rho n^2 D^4} \\\\
+            C_Q = \\frac{Q}{\\rho n^2 D^5} \\\\
+            C_P = 2\\pi C_Q \\\\
+            \\eta = \\frac{C_T}{C_P}J \\\\
+
+        :param None
+        :return: R, dCT/dr, dCP/dr
+        :rtype: tuple
+        """
+
+        df = self.rotor.sections_dataframe()
+        nsec = self.rotor.n_sections
+        D = self.rotor.diameter
+        R = 0.5*D
+        rho = self.fluid.rho
+        n = self.rpm/60.0
+        J = self.v_inf/(n*D)
+        omega = self.rpm*2*pi/60.0
+
+        dCT  = df.dT.values/(rho*n**2*D**4)
+        dCP  = omega*df.dQ.values/(rho*n**3*D**5)
+        R_   = np.ones(nsec+1)
+        dr_  = np.zeros(nsec+1)
+        dCT_ = np.zeros(nsec+1)
+        dCP_ = np.zeros(nsec+1)
+
+        dr_[0]  = self.rotor.sections[0].radius / R
+        R_[0]   = dr_[0]
+        for i in range(1,nsec):
+            R_[i]  = self.rotor.sections[i].radius / R
+            dr_[i] = (self.rotor.sections[i].radius - self.rotor.sections[i-1].radius)/ R
+        dr_[nsec] = (R - self.rotor.sections[nsec-1].radius) / R
         
+        for i in range(0,nsec):
+            dCT_[i] = dCT[i] / dr_[i]
+            dCP_[i] = dCP[i] / dr_[i]
+
+        return R_, dCT_, dCP_
+
     def run_sweep(self, parameter, n, low, high):
         """
         Utility function to run a sweep of a single parameter.
