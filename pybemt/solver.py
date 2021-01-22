@@ -40,6 +40,10 @@ class Solver:
         else:
             self.coaxial = False
         
+        if cfg.has_option('case', 'verbose'):
+            self.verbose = cfg.getboolean('case', 'verbose')
+        else:
+            self.verbose = True
 
         # Rotor
         if cfg.has_section('turbine'):
@@ -307,21 +311,22 @@ class Solver:
         :rtype: tuple
         """
         self.T, self.Q, self.P = self.solve(self.rotor, self.twist, self.rpm, self.v_inf, self.rotor.diameter)
-       
-        print('--- Results ---')
-        print('Trust (N):\t',self.T)
-        print('Torque (Nm):\t',self.Q)
-        print('Power (W):\t',self.P)
+        
+        if self.verbose:
+            print('--- Results ---')
+            print('Trust (N):\t',self.T)
+            print('Torque (Nm):\t',self.Q)
+            print('Power (W):\t',self.P)
 
         # Coaxial calculaction
         if self.coaxial:
             self.r_s, self.v_s = self.slipstream()
            
             self.T2, self.Q2, self.P2 = self.solve(self.rotor2, self.twist2, self.rpm2, self.v_s, self.r_s)
-
-            print('Trust 2 (N):\t',self.T2)
-            print('Torque 2 (Nm):\t',self.Q2)
-            print('Power 2 (W):\t',self.P2)
+            if self.verbose:
+                print('Trust 2 (N):\t',self.T2)
+                print('Torque 2 (Nm):\t',self.Q2)
+                print('Power 2 (W):\t',self.P2)
 
             return self.T, self.Q, self.P, self.rotor.sections_dataframe(), self.T2, self.Q2, self.P2, self.rotor2.sections_dataframe()
         
@@ -516,4 +521,60 @@ class Solver:
             result = optimize.differential_evolution(run_bemt, bounds, tol=1e-1)
         except TypeError:
             pdb.set_trace()
-        return result 
+        return result
+
+    def trim_twist(self, target_thrust, twist_min, twist_max):
+        """
+        Trim the global twist for a given thrust.
+        
+        :param float target_thrust: Target Thrust
+        :param float twist_min: RPM lower bound 
+        :param float twist_max: RPM upper bound
+
+        :return: New RPM
+        :rtype: float
+        """
+
+        def run_bemt(twist_new, target_thrust):
+            
+            self.twist = twist_new  
+            T,Q,P,df = self.run()
+            resid = target_thrust-T
+            
+            if self.verbose:
+                print("\nTwist New: ", twist_new)
+                print("Residual: ", resid)
+            
+            return resid
+
+        twist, results = optimize.bisect(run_bemt, twist_min, twist_max, xtol = 0.01, args=(target_thrust), full_output = True)
+
+        return twist, results
+
+    def trim_rpm(self, target_thrust, RPM_min, RPM_max):
+        """
+        Trim the RPM for a given thrust.
+        
+        :param float target_thrust: Target Thrust
+        :param float RPM_min: RPM lower bound 
+        :param float RPM_max: RPM upper bound
+
+        :return: New RPM
+        :rtype: float
+        """
+
+        def run_bemt(rpm_new, target_thrust):
+            
+            self.rpm = rpm_new  
+            T,Q,P,df = self.run()
+            resid = target_thrust-T
+
+            if self.verbose:
+                print("\nRPM New: ", rpm_new)
+                print("Residual: ", resid)
+            
+            return resid
+
+        rpm, results = optimize.bisect(run_bemt, RPM_min, RPM_max, xtol = 1., args=(target_thrust), full_output = True)
+
+        return rpm, results
